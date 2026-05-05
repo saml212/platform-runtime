@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "tenant": {
+    "id": "{{ TENANT_ID }}",
+    "lab": "{{ LAB_ID }}"
+  },
+  "env": {
+    "PLATFORM_TENANT_ID": "{{ TENANT_ID }}",
+    "PLATFORM_LAB_ID": "{{ LAB_ID }}",
+    "PLATFORM_TARGET_DIR": "{{ TARGET_DIR }}"
+  },
+  "permissions": {
+    "additionalDirectories": ["{{ TARGET_DIR }}"]
+  },
+  "skills": {
+    "directory": "/home/runtime/.claude/skills"
+  },
+  "commands": {
+    "directory": "/home/runtime/.claude/commands"
+  }
+}

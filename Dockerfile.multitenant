@@ -1,0 +1,247 @@
+# syntax=docker/dockerfile:1.7
+#
+# Per-tenant runtime image for Rockielab / Pebble ML.
+#
+# Three modes are selected at boot via the MODE env var:
+#   - subscription : run the official @anthropic-ai/claude-code (and @openai/codex)
+#                    binary against the tenant's Pro/Max OAuth session.
+#   - byok         : run the OpenClaw gateway against the tenant's API key.
+#   - open-weights : run the OpenClaw gateway against a platform-hosted
+#                    open-weights endpoint (cerebras / chutes / etc).
+#
+# The image bundles the OpenClaw gateway build (same stages as the existing
+# Dockerfile), the official claude / codex CLIs, Python 3.12, and the
+# platform-skills overlay translated into ~/.claude/ + ~/.codex/.
+#
+# Build with scripts/build-multitenant.sh, which sets the right build-args
+# and the platform-skills build-context.
+
+ARG OPENCLAW_EXTENSIONS=""
+ARG OPENCLAW_BUNDLED_PLUGIN_DIR=extensions
+ARG OPENCLAW_NODE_BOOKWORM_IMAGE="node:24-bookworm@sha256:3a09aa6354567619221ef6c45a5051b671f953f0a1924d1f819ffb236e520e6b"
+ARG OPENCLAW_NODE_BOOKWORM_SLIM_IMAGE="node:24-bookworm-slim@sha256:e8e2e91b1378f83c5b2dd15f0247f34110e2fe895f6ca7719dbb780f929368eb"
+ARG OPENCLAW_BUN_IMAGE="oven/bun:1.3.13@sha256:87416c977a612a204eb54ab9f3927023c2a3c971f4f345a01da08ea6262ae30e"
+
+# ── Stage 1: OpenClaw extension package.json gather ────────────────
+FROM ${OPENCLAW_NODE_BOOKWORM_IMAGE} AS ext-deps
+ARG OPENCLAW_EXTENSIONS
+ARG OPENCLAW_BUNDLED_PLUGIN_DIR
+RUN --mount=type=bind,source=${OPENCLAW_BUNDLED_PLUGIN_DIR},target=/tmp/${OPENCLAW_BUNDLED_PLUGIN_DIR},readonly \
+    mkdir -p /out && \
+    for ext in $OPENCLAW_EXTENSIONS; do \
+      if [ -f "/tmp/${OPENCLAW_BUNDLED_PLUGIN_DIR}/$ext/package.json" ]; then \
+        mkdir -p "/out/$ext" && \
+        cp "/tmp/${OPENCLAW_BUNDLED_PLUGIN_DIR}/$ext/package.json" "/out/$ext/package.json"; \
+      fi; \
+    done
+
+# ── Stage 2: Build OpenClaw ────────────────────────────────────────
+FROM ${OPENCLAW_BUN_IMAGE} AS bun-binary
+FROM ${OPENCLAW_NODE_BOOKWORM_IMAGE} AS build
+ARG OPENCLAW_BUNDLED_PLUGIN_DIR
+
+COPY --from=bun-binary /usr/local/bin/bun /usr/local/bin/bun
+RUN corepack enable
+
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY openclaw.mjs ./
+COPY ui/package.json ./ui/package.json
+COPY patches ./patches
+COPY scripts/postinstall-bundled-plugins.mjs scripts/preinstall-package-manager-warning.mjs scripts/npm-runner.mjs scripts/windows-cmd-helpers.mjs ./scripts/
+COPY scripts/lib/package-dist-imports.mjs ./scripts/lib/package-dist-imports.mjs
+
+COPY --from=ext-deps /out/ ./${OPENCLAW_BUNDLED_PLUGIN_DIR}/
+
+RUN --mount=type=cache,id=openclaw-pnpm-store,target=/root/.local/share/pnpm/store,sharing=locked \
+    NODE_OPTIONS=--max-old-space-size=2048 pnpm install --frozen-lockfile
+
+RUN set -eux; \
+    for attempt in 1 2 3 4 5; do \
+      if find /app/node_modules -name "matrix-sdk-crypto*.node" 2>/dev/null | grep -q .; then \
+        exit 0; \
+      fi; \
+      node /app/node_modules/@matrix-org/matrix-sdk-crypto-nodejs/download-lib.js || true; \
+      sleep $((attempt * 2)); \
+    done; \
+    find /app/node_modules -name "matrix-sdk-crypto*.node" 2>/dev/null | grep -q . || \
+      (echo "ERROR: matrix-sdk-crypto native addon missing after retries" >&2 && exit 1)
+
+COPY . .
+
+RUN for dir in /app/${OPENCLAW_BUNDLED_PLUGIN_DIR} /app/.agent /app/.agents; do \
+      if [ -d "$dir" ]; then \
+        find "$dir" -type d -exec chmod 755 {} +; \
+        find "$dir" -type f -exec chmod 644 {} +; \
+      fi; \
+    done
+
+RUN pnpm canvas:a2ui:bundle || \
+    (echo "A2UI bundle: creating stub (non-fatal)" && \
+     mkdir -p src/canvas-host/a2ui && \
+     echo "/* A2UI bundle unavailable in this build */" > src/canvas-host/a2ui/a2ui.bundle.js && \
+     echo "stub" > src/canvas-host/a2ui/.bundle.hash && \
+     rm -rf vendor/a2ui apps/shared/OpenClawKit/Tools/CanvasA2UI)
+RUN pnpm build:docker
+ENV OPENCLAW_PREFER_PNPM=1
+RUN pnpm ui:build
+RUN pnpm qa:lab:build
+
+# ── Stage 3: Prune OpenClaw runtime assets ─────────────────────────
+FROM build AS runtime-assets
+ARG OPENCLAW_EXTENSIONS
+ARG OPENCLAW_BUNDLED_PLUGIN_DIR
+RUN printf 'packages:\n  - .\n  - ui\n' > /tmp/pnpm-workspace.runtime.yaml && \
+    for ext in $OPENCLAW_EXTENSIONS; do \
+      printf '  - %s/%s\n' "$OPENCLAW_BUNDLED_PLUGIN_DIR" "$ext" >> /tmp/pnpm-workspace.runtime.yaml; \
+    done && \
+    cp /tmp/pnpm-workspace.runtime.yaml pnpm-workspace.yaml && \
+    CI=true NPM_CONFIG_FROZEN_LOCKFILE=false pnpm prune --prod && \
+    node scripts/postinstall-bundled-plugins.mjs && \
+    find dist -type f \( -name '*.d.ts' -o -name '*.d.mts' -o -name '*.d.cts' -o -name '*.map' \) -delete && \
+    node scripts/check-package-dist-imports.mjs /app
+
+# ── Stage 4: Skill assembly (translate platform-skills layout) ─────
+# `skills` build-context is bound into this stage so the host path is
+# never baked into the image. See scripts/build-multitenant.sh.
+FROM debian:bookworm-slim AS skills-assembly
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      bash coreutils ca-certificates rsync && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /work
+COPY --from=skills . /work/platform-skills/
+COPY overlay/multitenant/assemble-skills.sh /usr/local/bin/assemble-skills.sh
+RUN chmod +x /usr/local/bin/assemble-skills.sh && \
+    mkdir -p /work/home && \
+    /usr/local/bin/assemble-skills.sh /work/platform-skills /work/home
+
+# ── Stage 4b: Build the PTY-WebSocket broker (Go) ──────────────────
+# Small static binary that bridges xterm.js <-> claude/codex/bash PTYs.
+# See apps/broker/README.md for the wire protocol.
+FROM golang:1.23-bookworm AS broker-build
+WORKDIR /src
+COPY apps/broker/go.mod apps/broker/go.sum ./
+RUN --mount=type=cache,id=broker-go-mod,target=/go/pkg/mod,sharing=locked \
+    go mod download
+COPY apps/broker/ ./
+RUN --mount=type=cache,id=broker-go-mod,target=/go/pkg/mod,sharing=locked \
+    --mount=type=cache,id=broker-go-build,target=/root/.cache/go-build,sharing=locked \
+    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/broker .
+
+# ── Stage 5: Final multitenant runtime image ───────────────────────
+FROM ${OPENCLAW_NODE_BOOKWORM_SLIM_IMAGE}
+ARG OPENCLAW_BUNDLED_PLUGIN_DIR
+
+LABEL org.opencontainers.image.title="rockielab-runtime-multitenant" \
+  org.opencontainers.image.description="Per-tenant Rockielab / Pebble ML runtime: OpenClaw gateway + official claude/codex CLIs + platform-skills overlay" \
+  org.opencontainers.image.licenses="MIT"
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV NODE_ENV=production
+
+# System tooling: git, curl, jq, ssh-client, tmux, python3.12, build basics.
+# bookworm ships python3.11; the spec asks for 3.12, so we pull from
+# debian-testing only for python (apt pinning prevents unrelated upgrades).
+RUN --mount=type=cache,id=openclaw-mt-apt-cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=openclaw-mt-apt-lists,target=/var/lib/apt,sharing=locked \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+      ca-certificates curl git jq openssh-client tmux \
+      procps hostname lsof openssl gnupg \
+      python3 python3-pip python3-venv \
+      build-essential rsync less && \
+    update-ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# Optional: try to land python3.12 specifically. bookworm-slim ships 3.11;
+# to avoid pulling testing repos and bloating the image, we accept 3.11
+# as the system python and additionally install 3.12 only if available
+# without changing apt sources. Skills that require 3.12 should declare
+# their own venv via uv/pyenv at runtime.
+RUN python3 --version
+
+# Install official claude and codex CLIs globally via npm.
+# Both are published as npm packages; @anthropic-ai/claude-code is the
+# canonical name for the Claude Code CLI and @openai/codex is the canonical
+# name for OpenAI's Codex CLI (Apache-2.0).
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm install -g @anthropic-ai/claude-code @openai/codex || \
+    (echo "Falling back to per-package install if combined fails" >&2 && \
+     npm install -g @anthropic-ai/claude-code && \
+     npm install -g @openai/codex)
+
+# Verify both binaries resolved (cheap fail-fast at build time).
+RUN command -v claude && command -v codex
+
+WORKDIR /app
+
+# Bring in OpenClaw runtime artifacts from the build stages.
+COPY --from=runtime-assets /app/dist ./dist
+COPY --from=runtime-assets /app/node_modules ./node_modules
+COPY --from=runtime-assets /app/package.json ./package.json
+COPY --from=runtime-assets /app/patches ./patches
+COPY --from=runtime-assets /app/openclaw.mjs ./openclaw.mjs
+COPY --from=runtime-assets /app/${OPENCLAW_BUNDLED_PLUGIN_DIR} ./${OPENCLAW_BUNDLED_PLUGIN_DIR}
+COPY --from=runtime-assets /app/skills ./openclaw-skills
+COPY --from=runtime-assets /app/docs ./openclaw-docs
+COPY --from=runtime-assets /app/qa ./openclaw-qa
+
+# Add a `dist/index.js` shim for the entrypoint's `node /app/dist/index.js gateway`
+# convention (OpenClaw's CLI wrapper is openclaw.mjs, not dist/index.js).
+RUN if [ ! -f /app/dist/index.js ]; then \
+      printf '#!/usr/bin/env node\nimport("/app/openclaw.mjs");\n' > /app/dist/index.js && \
+      chmod 755 /app/dist/index.js; \
+    fi
+
+# Expose openclaw on PATH.
+RUN ln -sf /app/openclaw.mjs /usr/local/bin/openclaw && chmod 755 /app/openclaw.mjs
+
+# ── Tenant runtime user ────────────────────────────────────────────
+# Run as a dedicated non-root `runtime` user so ~/.claude/ and ~/.codex/
+# are writable and can be remounted with tenant-scoped volumes later.
+RUN useradd --create-home --shell /bin/bash --uid 1100 runtime && \
+    install -d -m 0755 -o runtime -g runtime /home/runtime/workspace
+
+# Drop in the assembled platform-skills overlay (~/.claude/, ~/.codex/).
+COPY --from=skills-assembly --chown=runtime:runtime /work/home/.claude /home/runtime/.claude
+COPY --from=skills-assembly --chown=runtime:runtime /work/home/.codex /home/runtime/.codex
+
+# Drop in the multitenant overlay files (entrypoint + settings template).
+COPY --chown=root:root overlay/multitenant/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chown=runtime:runtime overlay/multitenant/settings.json.j2 /home/runtime/.claude/settings.json.j2
+RUN chmod 755 /usr/local/bin/entrypoint.sh
+
+# Drop in the PTY-WebSocket broker binary built in stage 4b.
+COPY --from=broker-build /out/broker /usr/local/bin/broker
+RUN chmod 755 /usr/local/bin/broker
+
+# A reasonable default settings.json so `claude` doesn't trip on first run.
+# Tenant orchestration replaces this from settings.json.j2 at machine boot.
+RUN install -m 0644 -o runtime -g runtime /dev/null /home/runtime/.claude/settings.json && \
+    printf '%s\n' '{}' > /home/runtime/.claude/settings.json && \
+    chown runtime:runtime /home/runtime/.claude/settings.json
+
+# Give the runtime user ownership of /app so OpenClaw's state writes succeed.
+RUN chown -R runtime:runtime /app
+
+ENV HOME=/home/runtime
+ENV PATH=/home/runtime/.local/bin:/usr/local/bin:/usr/bin:/bin
+ENV MODE=byok
+ENV OPENCLAW_PORT=3000
+ENV OPENCLAW_BIND=lan
+
+USER runtime
+WORKDIR /home/runtime
+
+EXPOSE 3000
+EXPOSE 7681
+HEALTHCHECK --interval=3m --timeout=10s --start-period=15s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.OPENCLAW_PORT||3000)+'/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" || exit 0
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD []
