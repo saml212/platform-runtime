@@ -28,10 +28,26 @@ name: build-runtime-image
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
+    # Only rebuild when paths that affect the runtime image actually change.
+    # Skipping image-irrelevant paths (docs, top-level READMEs, agent prompts)
+    # cuts ~30 min of useless build time per unrelated push.
+    paths:
+      - "Dockerfile.multitenant"
+      - "overlay/multitenant/**"
+      - "apps/broker/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "package.json"
+      - "bun.lockb"
+      - "pnpm-lock.yaml"
+      - "requirements*.txt"
+      - ".github/workflows/build-runtime-image.yml"
   workflow_dispatch: {}
+  repository_dispatch:
+    # Fired by saml212/platform-skills when its `main` updates, so the
+    # baked-in skills overlay gets a fresh build. The dispatcher
+    # workflow lives on platform-skills (TODO if it doesn't exist yet).
+    types: [skills-updated]
 
 concurrency:
   group: build-runtime-image
