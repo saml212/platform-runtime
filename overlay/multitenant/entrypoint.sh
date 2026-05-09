@@ -22,8 +22,15 @@
 set -euo pipefail
 
 MODE="${MODE:-byok}"
-OPENCLAW_BIND="${OPENCLAW_BIND:-lan}"
-OPENCLAW_PORT="${OPENCLAW_PORT:-3000}"
+# OpenClaw gateway needs to listen on the Fly machine's external
+# interface so platform-context can HTTP-proxy to it through the
+# WireGuard tunnel. Default to 0.0.0.0; OPENCLAW_GATEWAY_TOKEN gates
+# the endpoint so this is safe (auth-required, not open).
+OPENCLAW_BIND="${OPENCLAW_BIND:-0.0.0.0}"
+# Match the gateway's documented default (src/gateway/server.impl.ts:508)
+# so platform-context's OpenClawGatewayBackend can hit it without per-
+# tenant port config.
+OPENCLAW_PORT="${OPENCLAW_PORT:-18789}"
 BROKER_PORT="${BROKER_PORT:-7681}"
 
 log() {
@@ -62,16 +69,33 @@ case "$MODE" in
       exec tail -f /dev/null
     fi
     ;;
-  byok)
-    log "MODE=byok; starting OpenClaw gateway on ${OPENCLAW_BIND}:${OPENCLAW_PORT}."
+  byok|open-weights)
+    log "MODE=${MODE}; starting OpenClaw gateway on ${OPENCLAW_BIND}:${OPENCLAW_PORT}."
+
+    # Gateway token: platform-context's OpenClawGatewayBackend sends
+    # `Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN`. Reuse the broker
+    # token if no dedicated one is set (same per-tenant secret, same
+    # role: proxy auth from platform-context). Without a token, the
+    # gateway accepts unauthenticated requests, which is wrong on a
+    # public Fly machine.
+    if [ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ] && [ -n "${BROKER_TENANT_TOKEN:-}" ]; then
+      export OPENCLAW_GATEWAY_TOKEN="$BROKER_TENANT_TOKEN"
+      log "openclaw: gateway token reused from BROKER_TENANT_TOKEN"
+    elif [ -n "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
+      log "openclaw: dedicated gateway token set"
+    else
+      log "WARN: no OPENCLAW_GATEWAY_TOKEN and no BROKER_TENANT_TOKEN — gateway will be open."
+    fi
+
     cd /app
-    exec node /app/dist/index.js gateway --port "$OPENCLAW_PORT" --bind "$OPENCLAW_BIND" --allow-unconfigured
-    ;;
-  open-weights)
-    log "MODE=open-weights; starting OpenClaw gateway on ${OPENCLAW_BIND}:${OPENCLAW_PORT}."
-    log "Tenant should configure cerebras/chutes endpoint via env (e.g. CEREBRAS_BASE_URL)."
-    cd /app
-    exec node /app/dist/index.js gateway --port "$OPENCLAW_PORT" --bind "$OPENCLAW_BIND" --allow-unconfigured
+    GATEWAY_ARGS=(--port "$OPENCLAW_PORT" --bind "$OPENCLAW_BIND")
+    if [ -n "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
+      GATEWAY_ARGS+=(--token "$OPENCLAW_GATEWAY_TOKEN")
+    else
+      GATEWAY_ARGS+=(--auth none)
+    fi
+    GATEWAY_ARGS+=(--allow-unconfigured)
+    exec node /app/dist/index.js gateway "${GATEWAY_ARGS[@]}"
     ;;
   *)
     log "ERROR: unknown MODE=${MODE}; expected one of: subscription, byok, open-weights"
