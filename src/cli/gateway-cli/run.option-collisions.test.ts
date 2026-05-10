@@ -19,7 +19,8 @@ const forceFreePortAndWait = vi.fn(async (_port: number, _opts: unknown) => ({
 }));
 const waitForPortBindable = vi.fn(async (_port: number, _opts?: unknown) => 0);
 const ensureDevGatewayConfig = vi.fn(async (_opts?: unknown) => {});
-const runGatewayLoop = vi.fn(async ({ start }: { start: () => Promise<unknown> }) => {
+type GatewayLoopStart = (params?: { startupStartedAt?: number }) => Promise<unknown>;
+const runGatewayLoop = vi.fn(async ({ start }: { start: GatewayLoopStart }) => {
   await start();
 });
 const gatewayLogMessages = vi.hoisted(() => [] as string[]);
@@ -157,7 +158,7 @@ vi.mock("./dev.js", () => ({
 }));
 
 vi.mock("./run-loop.js", () => ({
-  runGatewayLoop: (params: { start: () => Promise<unknown> }) => runGatewayLoop(params),
+  runGatewayLoop: (params: { start: GatewayLoopStart }) => runGatewayLoop(params),
 }));
 
 describe("gateway run option collisions", () => {
@@ -282,13 +283,7 @@ describe("gateway run option collisions", () => {
 
   it("omits openAiChatCompletionsEnabled when --openai-chat-completions is absent", async () => {
     // Default-off preserves upstream behavior for non-Rockie callers.
-    await runGatewayCli([
-      "gateway",
-      "run",
-      "--token",
-      "tok_default",
-      "--allow-unconfigured",
-    ]);
+    await runGatewayCli(["gateway", "run", "--token", "tok_default", "--allow-unconfigured"]);
 
     const calls = startGatewayServer.mock.calls;
     expect(calls.length).toBeGreaterThan(0);

@@ -803,15 +803,19 @@ async function runGatewayCommand(opts: GatewayRunOpts) {
   // `--host <ip>` is an advanced override. When passed we use it as the
   // health-probe host too, otherwise we resolve via the chosen bind mode.
   const hostOverride = toOptionString(opts.host);
-  const healthHost = hostOverride ?? (await resolveGatewayBindHost(bind, cfg.gateway?.customBindHost));
+  const healthHost =
+    hostOverride ?? (await resolveGatewayBindHost(bind, cfg.gateway?.customBindHost));
   const openaiChatCompletionsOverride = opts.openaiChatCompletions ? true : undefined;
+  let startupConfigSnapshotReadForNextStart = startupConfigSnapshotRead;
   const startLoop = async () =>
     await runGatewayLoop({
       runtime: defaultRuntime,
       lockPort: port,
       healthHost,
-      start: async ({ startupStartedAt } = {}) =>
-        await startGatewayServer(port, {
+      start: async ({ startupStartedAt } = {}) => {
+        const startupConfigSnapshotReadForThisStart = startupConfigSnapshotReadForNextStart;
+        startupConfigSnapshotReadForNextStart = undefined;
+        return await startGatewayServer(port, {
           bind,
           ...(hostOverride ? { host: hostOverride } : {}),
           ...(openaiChatCompletionsOverride !== undefined
@@ -820,8 +824,11 @@ async function runGatewayCommand(opts: GatewayRunOpts) {
           auth: authOverride,
           tailscale: tailscaleOverride,
           startupStartedAt,
-          ...(startupConfigSnapshotRead ? { startupConfigSnapshotRead } : {}),
-        }),
+          ...(startupConfigSnapshotReadForThisStart
+            ? { startupConfigSnapshotRead: startupConfigSnapshotReadForThisStart }
+            : {}),
+        });
+      },
     });
 
   const { detectRespawnSupervisor } = await import("../../infra/supervisor-markers.js");
