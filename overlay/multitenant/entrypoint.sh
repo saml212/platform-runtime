@@ -22,6 +22,17 @@
 set -euo pipefail
 
 MODE="${MODE:-byok}"
+
+# rockie-gpu CLI (Phase 5 step 5) reads these to talk to platform-context.
+# ROCKIELAB_API_BASE defaults to the prod control-plane; per-tenant Fly
+# env can override (e.g. https://api.dev.rockielab.com). The tenant
+# token is the same BROKER_TENANT_TOKEN that authenticates the broker
+# WS — both surfaces are tenant-scoped against the platform-context
+# X-Tenant-Token header.
+export ROCKIELAB_API_BASE="${ROCKIELAB_API_BASE:-https://api.rockielab.com}"
+if [ -n "${BROKER_TENANT_TOKEN:-}" ] && [ -z "${ROCKIELAB_TENANT_TOKEN:-}" ]; then
+  export ROCKIELAB_TENANT_TOKEN="$BROKER_TENANT_TOKEN"
+fi
 # OpenClaw gateway needs to listen on the Fly machine's external
 # interface so platform-context can HTTP-proxy to it through the
 # WireGuard tunnel. Fly's 6PN private network is IPv6-ONLY (addresses

@@ -1,0 +1,296 @@
+#!/usr/bin/env python3
+"""rockie-gpu — agent-facing CLI for the Rockie GPU broker.
+
+Lives in the per-tenant runtime image at ``/opt/rockie-gpu/rockie-gpu``
+with a symlink at ``/usr/local/bin/rockie-gpu``. The in-runtime agent
+(Claude / Codex / OpenClaw) shells out to it the way it shells out to
+``gh`` or ``flyctl``.
+
+Default output is JSON-lines (one JSON object per line), so the agent
+can parse it deterministically. ``--human`` flips to a friendlier
+table view for ad-hoc debugging.
+
+Subcommands:
+
+  list-prices [--gpu GPU] [--spot] [--human]
+  provision   --gpu GPU --hours H [--spot] [--region R] [--dry-run]
+  status      POD_ID [--provider P]
+  spent
+  teardown    POD_ID [--provider P]
+
+Reads two env vars set by ``overlay/multitenant/entrypoint.sh``:
+
+  ROCKIELAB_API_BASE        — e.g. https://api.rockielab.com
+  ROCKIELAB_TENANT_TOKEN    — passed as X-Tenant-Token
+
+Exit codes:
+  0   success
+  1   network / API error
+  2   bad argv / usage error
+  3   server returned HTTP 4xx (auth, validation, insufficient credit)
+  4   server returned HTTP 5xx (provider outage)
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any, Optional
+
+
+DEFAULT_API_BASE = os.environ.get(
+    "ROCKIELAB_API_BASE", "https://api.rockielab.com"
+)
+TENANT_TOKEN = os.environ.get("ROCKIELAB_TENANT_TOKEN", "")
+
+
+# ---------------------------------------------------------------------------
+# HTTP helper — stdlib only so we don't drag pip deps into the runtime image
+# ---------------------------------------------------------------------------
+
+
+class CLIError(Exception):
+    def __init__(self, message: str, exit_code: int = 1):
+        super().__init__(message)
+        self.exit_code = exit_code
+
+
+def _build_request(
+    method: str, path: str, body: Optional[dict]
+) -> urllib.request.Request:
+    url = f"{DEFAULT_API_BASE.rstrip('/')}{path}"
+    headers = {"Accept": "application/json"}
+    if TENANT_TOKEN:
+        headers["X-Tenant-Token"] = TENANT_TOKEN
+    data: Optional[bytes] = None
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    return urllib.request.Request(url, data=data, headers=headers, method=method)
+
+
+def _parse_http_error(e: urllib.error.HTTPError) -> "CLIError":
+    try:
+        payload = json.loads(e.read().decode("utf-8"))
+    except Exception:
+        payload = {"detail": str(e)}
+    code = 3 if 400 <= e.code < 500 else 4
+    return CLIError(f"HTTP {e.code}: {json.dumps(payload)}", exit_code=code)
+
+
+def _http(
+    method: str, path: str, body: Optional[dict] = None
+) -> Any:
+    req = _build_request(method, path, body)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read()
+            return json.loads(raw.decode("utf-8")) if raw else None
+    except urllib.error.HTTPError as e:
+        raise _parse_http_error(e) from e
+    except urllib.error.URLError as e:
+        raise CLIError(f"Network error: {e.reason}", exit_code=1) from e
+
+
+# ---------------------------------------------------------------------------
+# Output helpers
+# ---------------------------------------------------------------------------
+
+
+def _emit_jsonlines(obj: Any) -> None:
+    rows = obj if isinstance(obj, list) else [obj]
+    for row in rows:
+        sys.stdout.write(json.dumps(row, sort_keys=True) + "\n")
+    sys.stdout.flush()
+
+
+def _emit_table(rows: list) -> None:
+    if not rows:
+        print("(no rows)")
+        return
+    cols = list(rows[0].keys())
+    widths = {c: max(len(c), max(len(str(r.get(c, ""))) for r in rows)) for c in cols}
+    line = "  ".join(c.ljust(widths[c]) for c in cols)
+    print(line)
+    print("-" * len(line))
+    for r in rows:
+        print("  ".join(str(r.get(c, "")).ljust(widths[c]) for c in cols))
+
+
+def _emit(obj: Any, human: bool = False) -> None:
+    """One JSON object per line by default. ``--human`` formats as a
+    small table (lists) or key:value block (dicts) for ad-hoc debugging."""
+    if not human:
+        _emit_jsonlines(obj)
+        return
+    if isinstance(obj, list):
+        _emit_table(obj)
+    else:
+        for k, v in obj.items():
+            print(f"{k}: {v}")
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: list-prices
+# ---------------------------------------------------------------------------
+
+
+def cmd_list_prices(args: argparse.Namespace) -> int:
+    query: dict[str, str] = {}
+    if args.gpu:
+        query["gpu"] = args.gpu
+    if args.spot:
+        query["spot"] = "true"
+    qs = ("?" + urllib.parse.urlencode(query)) if query else ""
+    rows = _http("GET", f"/api/gpu/prices{qs}")
+    _emit(rows or [], human=args.human)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: provision
+# ---------------------------------------------------------------------------
+
+
+def cmd_provision(args: argparse.Namespace) -> int:
+    body = {
+        "gpu_type": args.gpu,
+        "gpu_count": args.gpu_count,
+        "hours": args.hours,
+        "spot": args.spot,
+        "dry_run": args.dry_run,
+    }
+    if args.region:
+        body["region"] = args.region
+    if args.name:
+        body["name"] = args.name
+    result = _http("POST", "/api/gpu/provision", body=body)
+    _emit(result, human=args.human)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: status
+# ---------------------------------------------------------------------------
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    qs = "?" + urllib.parse.urlencode({"provider": args.provider})
+    result = _http("GET", f"/api/gpu/pods/{args.pod_id}/status{qs}")
+    _emit(result, human=args.human)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: spent
+# ---------------------------------------------------------------------------
+
+
+def cmd_spent(args: argparse.Namespace) -> int:
+    result = _http("GET", "/api/gpu/spent")
+    _emit(result, human=args.human)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: teardown
+# ---------------------------------------------------------------------------
+
+
+def cmd_teardown(args: argparse.Namespace) -> int:
+    qs = "?" + urllib.parse.urlencode({"provider": args.provider})
+    _http("DELETE", f"/api/gpu/pods/{args.pod_id}{qs}")
+    _emit(
+        {"pod_id": args.pod_id, "provider": args.provider, "state": "TORN_DOWN"},
+        human=args.human,
+    )
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# argparse
+# ---------------------------------------------------------------------------
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="rockie-gpu",
+        description="Rockie GPU broker CLI (agent-facing).",
+    )
+    parser.add_argument(
+        "--human",
+        action="store_true",
+        help="Human-readable output (default: JSON-lines).",
+    )
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_prices = sub.add_parser(
+        "list-prices",
+        help="List ranked GPU prices across all configured providers.",
+    )
+    p_prices.add_argument("--gpu", help="Filter by gpu_type (e.g. A100_80GB).")
+    p_prices.add_argument(
+        "--spot", action="store_true", help="Show spot/preemptible quotes."
+    )
+    p_prices.set_defaults(func=cmd_list_prices)
+
+    p_prov = sub.add_parser(
+        "provision",
+        help="Provision a pod; consumes credits BEFORE the adapter call.",
+    )
+    p_prov.add_argument("--gpu", required=True, help="GPU type (e.g. A100_80GB).")
+    p_prov.add_argument("--gpu-count", type=int, default=1)
+    p_prov.add_argument(
+        "--hours", type=float, required=True, help="Estimated hours."
+    )
+    p_prov.add_argument("--spot", action="store_true", default=True)
+    p_prov.add_argument("--on-demand", dest="spot", action="store_false")
+    p_prov.add_argument("--region", default=None)
+    p_prov.add_argument("--name", default=None)
+    p_prov.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Exercise the full broker → credit path but stub the actual "
+            "provider call. Refunds the debit before returning."
+        ),
+    )
+    p_prov.set_defaults(func=cmd_provision)
+
+    p_status = sub.add_parser("status", help="Pod status + utilization.")
+    p_status.add_argument("pod_id")
+    p_status.add_argument("--provider", default="runpod")
+    p_status.set_defaults(func=cmd_status)
+
+    p_spent = sub.add_parser(
+        "spent", help="Current calendar-period spend for this tenant."
+    )
+    p_spent.set_defaults(func=cmd_spent)
+
+    p_teardown = sub.add_parser(
+        "teardown", help="Tear down a pod (idempotent — 404 == success)."
+    )
+    p_teardown.add_argument("pod_id")
+    p_teardown.add_argument("--provider", default="runpod")
+    p_teardown.set_defaults(func=cmd_teardown)
+
+    return parser
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return args.func(args)
+    except CLIError as e:
+        sys.stderr.write(f"rockie-gpu: {e}\n")
+        return e.exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

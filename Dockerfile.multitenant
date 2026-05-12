@@ -229,6 +229,16 @@ RUN chmod 755 /usr/local/bin/entrypoint.sh
 COPY --from=broker-build /out/broker /usr/local/bin/broker
 RUN chmod 755 /usr/local/bin/broker
 
+# Drop in the rockie-gpu CLI — the agent-facing handle on the GPU
+# broker (Phase 5 step 5 of the active MVP plan). Symlinked into
+# /usr/local/bin so `rockie-gpu list-prices ...` works from any cwd
+# inside the runtime, the same shape as `gh` or `flyctl`.
+RUN install -d -m 0755 /opt/rockie-gpu
+COPY --chown=root:root overlay/multitenant/rockie-gpu /opt/rockie-gpu/rockie-gpu
+RUN chmod 755 /opt/rockie-gpu/rockie-gpu && \
+    mkdir -p /usr/local/bin && \
+    ln -sf /opt/rockie-gpu/rockie-gpu /usr/local/bin/rockie-gpu
+
 # Drop in the mcp-rockie MCP server (Phase 5 h.3) so claude/codex can
 # call list_labs / get_lab / search / submit_experiment / etc. against
 # platform-context.
