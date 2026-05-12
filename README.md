@@ -1,3 +1,24 @@
+<!-- ROCKIE POINTER (preserved on upstream merges; the README body below is OpenClaw's) -->
+
+> **Reading this from the Rockie monorepo?** This repo is `platform-runtime`,
+> a fork of `openclaw/openclaw` that bakes the per-tenant Fly machine image
+> for Rockie. The Rockie-specific surface is:
+> - **`Dockerfile.multitenant`** — bakes claude/codex binaries + OpenClaw
+>   gateway + Go PTY-WS broker (`apps/broker/`) + skills overlay assembled
+>   from `../platform-skills/`.
+> - **`overlay/multitenant/`** — `entrypoint.sh` (mode router:
+>   `MODE=subscription|byok|open-weights`, `BINARY=claude|codex`) and
+>   `assemble-skills.sh` (canonical-source: `../platform-skills/skills/`).
+> - **`apps/broker/`** — Go binary; PTY-WS bridge; `GET /ws`, `POST /spawn`,
+>   `POST /chat?binary=...` (Phase 5 h.5).
+> - **`AGENTS.md` / `CLAUDE.md` (symlink)** — process doc; the Rockie
+>   appendix is at the bottom under `## Multitenant runtime (Rockie additions)`.
+>
+> For cross-repo orientation, see `../docs/architecture.md` in the workspace
+> meta-repo. The OpenClaw upstream README continues below.
+
+---
+
 # 🦞 OpenClaw — Personal AI Assistant
 
 <p align="center">

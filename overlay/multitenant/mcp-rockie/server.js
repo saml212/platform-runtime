@@ -264,6 +264,188 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  // --- Karpathy autoresearch journal (MVP step 8) ---
+  {
+    name: 'hypothesis_register',
+    description:
+      "Register a new hypothesis in a lab's journal. Status defaults to 'proposed'. Optionally link source_ids for grounding and parent_hypothesis_id for refinement chains.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        lab_id: { type: 'string' },
+        statement: { type: 'string', minLength: 1 },
+        status: {
+          type: 'string',
+          enum: ['proposed', 'active', 'supported', 'falsified', 'parked'],
+          default: 'proposed',
+        },
+        source_ids: { type: 'array', items: { type: 'string' }, default: [] },
+        parent_hypothesis_id: { type: 'string' },
+      },
+      required: ['lab_id', 'statement'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'hypothesis_update',
+    description:
+      "Update a hypothesis. Append-only: writes a new version row and supersedes the previous. Enforces the state machine (no jump from 'proposed' to 'supported'). verdict_reasoning (>= 20 chars of prose) is REQUIRED on any transition landing on 'supported' or 'falsified' — explain why before claiming the verdict.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        hypothesis_id: { type: 'string' },
+        status: {
+          type: 'string',
+          enum: ['proposed', 'active', 'supported', 'falsified', 'parked'],
+        },
+        statement: { type: 'string', minLength: 1 },
+        supporting_artifact_ids: {
+          type: 'array',
+          items: { type: 'string' },
+          default: [],
+        },
+        verdict_reasoning: {
+          type: 'string',
+          minLength: 20,
+          description:
+            "Prose justification for a supported/falsified verdict. Required when status transitions onto supported or falsified.",
+        },
+      },
+      required: ['hypothesis_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'hypothesis_list',
+    description:
+      "List the latest version of every hypothesis in a lab. Default filter is 'proposed | active' (open work).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        lab_id: { type: 'string' },
+        status: {
+          type: 'string',
+          enum: ['proposed', 'active', 'supported', 'falsified', 'parked'],
+        },
+      },
+      required: ['lab_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'dead_end_record',
+    description:
+      "Record a dead-end. Once recorded, the agent should search this registry before re-attempting any approach. `reasoning` (>= 20 chars) is REQUIRED so future agents understand WHY the approach failed.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        lab_id: { type: 'string' },
+        what_failed: { type: 'string', minLength: 1 },
+        reasoning: {
+          type: 'string',
+          minLength: 20,
+          description:
+            'Prose explanation of why the approach failed. Required (>= 20 chars).',
+        },
+        related_hypothesis_id: { type: 'string' },
+        related_experiment_id: { type: 'string' },
+      },
+      required: ['lab_id', 'what_failed', 'reasoning'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'dead_end_search',
+    description:
+      "Full-text search the lab's dead-end registry. Use BEFORE proposing a new approach to avoid re-walking known bad paths.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        lab_id: { type: 'string' },
+        query: { type: 'string', minLength: 1 },
+        top_k: { type: 'integer', minimum: 1, maximum: 50, default: 5 },
+      },
+      required: ['lab_id', 'query'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'calibration_record',
+    description:
+      "Capture the agent's stated prior on a hypothesis. Used to grade calibration later (Brier score).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        hypothesis_id: { type: 'string' },
+        claimed_probability: { type: 'number', minimum: 0.0, maximum: 1.0 },
+        claimed_at: { type: 'string' },
+        resolved_at: { type: 'string' },
+        actual_outcome: { type: 'number', minimum: 0.0, maximum: 1.0 },
+      },
+      required: ['hypothesis_id', 'claimed_probability'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'calibration_resolve',
+    description:
+      "Close out a calibration by setting its actual_outcome (1.0 if the linked hypothesis ended 'supported', 0.0 if 'falsified').",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        calibration_id: { type: 'string' },
+        actual_outcome: { type: 'number', minimum: 0.0, maximum: 1.0 },
+      },
+      required: ['calibration_id', 'actual_outcome'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'calibration_brier_score',
+    description:
+      "Compute the lab's running Brier score over resolved calibrations. Lower is better.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        lab_id: { type: 'string' },
+      },
+      required: ['lab_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'experiment_link',
+    description:
+      "Link an experiment to a hypothesis with an explicit role ('tests' | 'supports' | 'invalidates'). Many-to-many.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        experiment_id: { type: 'string' },
+        hypothesis_id: { type: 'string' },
+        role: {
+          type: 'string',
+          enum: ['tests', 'supports', 'invalidates'],
+          default: 'tests',
+        },
+      },
+      required: ['experiment_id', 'hypothesis_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'lab_journal_read',
+    description:
+      "Single call returning the full journal for a lab (hypotheses, dead_ends, calibrations, links). The rockie-loop daemon uses this on every wake to ground its planning.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        lab_id: { type: 'string' },
+        since: { type: 'string' },
+      },
+      required: ['lab_id'],
+      additionalProperties: false,
+    },
+  },
   {
     name: 'emit_artifact',
     description:
