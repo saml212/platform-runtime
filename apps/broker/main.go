@@ -696,6 +696,13 @@ func run() error {
 	mux.HandleFunc("/ws", wsHandler)
 	mux.HandleFunc("/spawn", spawnHandler)
 	mux.HandleFunc("/chat", chatHandler)
+	mux.HandleFunc("/chat-pty", chatPTYHandler)
+
+	// Persistent-session GC. Runs for the lifetime of the server; we tear
+	// it down with the server's graceful-shutdown context.
+	gcCtx, stopGC := context.WithCancel(context.Background())
+	defer stopGC()
+	globalPool.startGC(gcCtx)
 
 	srv := &http.Server{
 		Addr:              ":" + brokerPort(),
@@ -709,6 +716,8 @@ func run() error {
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 		<-sig
 		log("shutdown: signal received")
+		stopGC()
+		globalPool.shutdown()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(ctx)
