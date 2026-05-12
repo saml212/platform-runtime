@@ -76,6 +76,11 @@ DEFAULT_API_BASE = os.environ.get(
     "ROCKIELAB_API_BASE", "https://api.rockielab.com"
 )
 TENANT_TOKEN = os.environ.get("ROCKIELAB_TENANT_TOKEN", "")
+# Bearer for PasswordAuthMiddleware on platform-context. Mirrors the
+# env-var fallback chain mcp-rockie uses.
+API_PASSWORD = os.environ.get("ROCKIELAB_API_PASSWORD") or os.environ.get(
+    "OPEN_NOTEBOOK_PASSWORD", ""
+)
 BROKER_PORT = int(os.environ.get("BROKER_PORT", "7681"))
 BROKER_TENANT_TOKEN = os.environ.get("BROKER_TENANT_TOKEN", "")
 RUNTIME_MODE = os.environ.get("MODE", "subscription")
@@ -127,6 +132,18 @@ def _build_request(
         "Accept": "application/json",
         "User-Agent": "rockie-loop/1.0",
     }
+    # PasswordAuthMiddleware on platform-context requires a Bearer
+    # header on every authenticated request. The daemon authenticates
+    # at the global layer with the API password and at the tenant
+    # layer with X-Tenant-Token. Without Authorization every call 401s
+    # with "Missing authorization header" before X-Tenant-Token is
+    # even consulted. Mirrors mcp-rockie/server.js:515.
+    # NOTE 2026-05-12: ROCKIELAB_API_PASSWORD is NOT staged in tenant
+    # Fly secrets today. Until provisioning sets it (task #63), the
+    # daemon's authenticated calls still 401. The Bearer wiring here
+    # is half of the fix; the other half is server-side.
+    if API_PASSWORD:
+        headers["Authorization"] = f"Bearer {API_PASSWORD}"
     token = token if token is not None else TENANT_TOKEN
     if token:
         headers["X-Tenant-Token"] = token
