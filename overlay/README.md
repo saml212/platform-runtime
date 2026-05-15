@@ -55,6 +55,28 @@ this file when provisioning a tenant; the runtime reads it on start.
 - `bundled` — *(future)* package as a hook-pack npm and `openclaw plugins
   install` it. Not yet implemented.
 
+## MCP-server registration paths
+
+Where the `mcp-rockie` tools register with the host LLM depends on `MODE`:
+
+- `MODE=subscription` — `claude` and `codex` binaries read
+  `~/.claude/mcp.json` and `~/.codex/mcp.json` respectively. These are
+  baked into the image at `Dockerfile.multitenant` (the layer that
+  copies `overlay/multitenant/mcp-rockie/` and writes the two JSON
+  files). No gateway involvement.
+- `MODE=byok` and `MODE=open-weights` — the OpenClaw gateway reads
+  the config at `$OPENCLAW_CONFIG_PATH`, which
+  `overlay/multitenant/entrypoint.sh` renders at boot via `jq -n` into
+  `/home/runtime/.openclaw/openclaw.json`. The rendered file mirrors
+  the schema in `overlay/multitenant/openclaw.example.json`. The
+  gateway's `--config` flag is NOT used — Commander doesn't declare
+  it; only the env var works.
+- Tenant flow (`overlay/tenant/start.sh`) — single-tenant single-user
+  flow with its own template; out of scope for the multitenant render.
+
+If `pnpm check:multitenant-byok-config` fails, the gateway has lost
+its rendered config (likely a regression to `--allow-unconfigured`).
+
 ## Tenant scripts
 
 `tenant/start.sh`, `tenant/stop.sh`, `tenant/status.sh` are the contract
