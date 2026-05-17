@@ -275,7 +275,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_list = sub.add_parser("list-prices", help="Ranked unified price list.")
+    # `list` is an argparse alias for `list-prices` (operators reach for the
+    # shorter form first). Same subparser, same handler — so `args.func is`
+    # equality holds for both invocations.
+    p_list = sub.add_parser(
+        "list-prices",
+        aliases=["list"],
+        help="Ranked unified price list across all configured providers.",
+    )
     p_list.add_argument("--gpu", default=None, help="Filter by GPU type id.")
     p_list.add_argument(
         "--spot", action="store_true", help="Spot/preemptible quotes."
@@ -286,16 +293,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Filter to a single provider (e.g. runpod, lambda).",
     )
     p_list.set_defaults(func=_cmd_list_prices)
-
-    # `list` is a short alias for `list-prices`. Identical args and handler;
-    # the handler is shared so dispatch identity matches in unit tests.
-    p_list_alias = sub.add_parser(
-        "list", help="Alias for list-prices."
-    )
-    p_list_alias.add_argument("--gpu", default=None)
-    p_list_alias.add_argument("--spot", action="store_true")
-    p_list_alias.add_argument("--provider", default=None)
-    p_list_alias.set_defaults(func=_cmd_list_prices)
 
     p_prov = sub.add_parser("provision", help="Provision a GPU pod.")
     p_prov.add_argument("--gpu", required=True, help="GPU type id.")

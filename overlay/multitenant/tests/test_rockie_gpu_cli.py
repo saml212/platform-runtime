@@ -126,3 +126,18 @@ def test_missing_config_returns_empty_dict(cli):
     assert cli._load_local_config() == {}
 
 
+# ---------------------------------------------------------------------------
+# argparse `list` alias dispatches to the same handler as `list-prices`
+# ---------------------------------------------------------------------------
+
+
+def test_list_alias_dispatches_to_list_prices_handler(cli):
+    parser = cli.build_parser()
+    canonical = parser.parse_args(["list-prices"])
+    alias = parser.parse_args(["list"])
+    # `is` equality — not a string match — per Phase-3.5 audit fix:
+    # argparse aliases display the canonical name in --help, so a
+    # textual comparison would be misleading.
+    assert alias.func is canonical.func
+
+
