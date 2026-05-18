@@ -229,6 +229,13 @@ func TestSessionPoolShutdownKillsAll(t *testing.T) {
 // reuse the warm process (no respawn).
 func TestChatPTYEndToEndWithStub(t *testing.T) {
 	t.Setenv("BROKER_TENANT_TOKEN", "tt")
+	// The #292 auth_required gate runs before the spawn pool — point
+	// HOME at a tmpdir and synthesise a credentials file so the test
+	// exercises the actual end-to-end pool path rather than the gate.
+	// The stubbed binary is fake; the gate doesn't read the file's
+	// contents, only its size.
+	withTempHome(t)
+	writeAuthFile(t, "claude")
 
 	// Swap the global pool's spawn function so /chat-pty uses the stub.
 	prevSpawn := globalPool.spawnFn
@@ -362,6 +369,10 @@ func TestChatPTYRejectsEmptyPrompt(t *testing.T) {
 // in their own response bodies, not bled across.
 func TestSessionMutexSerialisesConcurrentTurns(t *testing.T) {
 	t.Setenv("BROKER_TENANT_TOKEN", "tt")
+	// #292: bypass the auth-required gate so the test reaches the
+	// session pool.
+	withTempHome(t)
+	writeAuthFile(t, "claude")
 
 	prevSpawn := globalPool.spawnFn
 	globalPool.mu.Lock()

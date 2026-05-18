@@ -616,6 +616,18 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Gate: codex/claude both refuse to talk to their upstream when no
+	// auth file exists, and spend ~8s doing five-attempt retries
+	// before exiting non-zero. Short-circuit that: if the on-disk
+	// credential file is missing, return an actionable `auth_required`
+	// frame so the frontend renders a sign-in CTA. fleet-task #292.
+	if !authFileExists(binary) {
+		writeAuthRequiredFrame(w, binary)
+		log("chat: refused spawn binary=%s reason=auth_required path=%s",
+			binary, authFilePath(binary))
+		return
+	}
+
 	// When SessionID is set, claude resumes that session — flat-prompt
 	// flattening would duplicate history. Pass just the new turn's
 	// prompt instead. Otherwise fall back to flattening for the

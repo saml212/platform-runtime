@@ -426,6 +426,18 @@ func chatPTYHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Same auth-file gate as /chat: a missing credentials file means
+	// the persistent claude session will just emit "Not logged in" and
+	// exit. Surface the same actionable `auth_required` frame so the
+	// frontend can render a sign-in CTA instead of a generic error.
+	// fleet-task #292.
+	if !authFileExists(binary) {
+		writeAuthRequiredFrame(w, binary)
+		log("chat-pty: refused spawn binary=%s reason=auth_required path=%s",
+			binary, authFilePath(binary))
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), turnTimeout)
 	defer cancel()
 

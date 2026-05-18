@@ -20,12 +20,27 @@
 //
 // State scope is process-local. The broker runs one-per-tenant on Fly,
 // so process-local == per-tenant. No multi-broker coordination needed.
+//
+// Issue #292 follow-up: in-flight gating fixed the race, but did not
+// cover the symmetric case where a user "completed" a device-flow that
+// silently failed (token exchange returned 400 because the code
+// expired). In that state no /login is in flight, no auth.json exists,
+// and every /chat invocation spawns codex which immediately hits HTTP
+// 401 against wss://api.openai.com/v1/responses, retries five times,
+// exits non-zero, and surfaces in the UI as "codex exited with: exit
+// status 1" — eating ~8s per send and giving the user no actionable
+// guidance. We add a cheap auth-file existence check (~/.codex/auth.json
+// for codex, ~/.claude/.credentials.json for claude) on the same gate
+// path. Missing → `auth_required` ndjson frame; the frontend renders a
+// "sign in" CTA, same shape as `byok-key-missing`.
 package main
 
 import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 )
 
@@ -100,6 +115,75 @@ func writeAuthInProgressFrame(w http.ResponseWriter, binary string) {
 		"type":    "error",
 		"code":    "auth_in_progress",
 		"message": binary + " /login is in progress; chat blocked until login completes",
+	}
+	bs, _ := json.Marshal(frame)
+	_, _ = w.Write(bs)
+	_, _ = w.Write([]byte{'\n'})
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+// authFilePath returns the per-binary on-disk credential path. Codex
+// writes ~/.codex/auth.json after a successful device-code exchange;
+// claude writes ~/.claude/.credentials.json after `claude setup-token`
+// or `claude /login` completes. Both are anchored at HOME, which the
+// entrypoint pins to the per-tenant Fly volume mount so the file
+// survives machine restarts. Returns "" if neither HOME nor a known
+// binary mapping applies.
+func authFilePath(binary string) string {
+	home := os.Getenv("HOME")
+	if home == "" {
+		// Fall back to the tenant default. Both the multitenant image
+		// and the tests run under /home/runtime; using a hardcoded
+		// default lets the check still mean something if HOME got
+		// scrubbed, rather than silently passing.
+		home = "/home/runtime"
+	}
+	switch binary {
+	case "codex":
+		return filepath.Join(home, ".codex", "auth.json")
+	case "claude":
+		return filepath.Join(home, ".claude", ".credentials.json")
+	}
+	return ""
+}
+
+// authFileExists reports whether `binary`'s credential file is present
+// and non-empty. Empty is treated as "missing" because codex writes the
+// file as the *last* step of the device-code exchange — a 0-byte file
+// would only exist mid-write, never as the final state. Errors are
+// treated as "missing" too: the conservative direction here is to
+// surface an actionable sign-in CTA, not to silently spawn a binary
+// that will fail with HTTP 401 anyway.
+func authFileExists(binary string) bool {
+	p := authFilePath(binary)
+	if p == "" {
+		// Bash and any other binary we ever add: don't gate. The gate
+		// is specifically about claude/codex subscription auth.
+		return true
+	}
+	st, err := os.Stat(p)
+	if err != nil {
+		return false
+	}
+	return st.Size() > 0
+}
+
+// writeAuthRequiredFrame emits the broker's standard `auth_required`
+// ndjson error frame. Same wire shape as `auth_in_progress`; the
+// distinct `code` lets the frontend pick a "Sign in" CTA instead of
+// "Wait, login is in progress" copy.
+func writeAuthRequiredFrame(w http.ResponseWriter, binary string) {
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	frame := map[string]any{
+		"type": "error",
+		"code": "auth_required",
+		"message": binary + " is not signed in on this tenant. " +
+			"Go to /settings/token-source and sign in to use chat.",
 	}
 	bs, _ := json.Marshal(frame)
 	_, _ = w.Write(bs)
