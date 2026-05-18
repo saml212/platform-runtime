@@ -25,7 +25,6 @@ import { formatErrorMessage } from "../../infra/errors.js";
 import { GatewayLockError } from "../../infra/gateway-lock.js";
 import type { RespawnSupervisor } from "../../infra/supervisor-markers.js";
 import { setConsoleSubsystemFilter, setConsoleTimestampPrefix } from "../../logging/console.js";
-import { withDiagnosticPhase } from "../../logging/diagnostic-phase.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { defaultRuntime } from "../../runtime.js";
 import {
@@ -175,7 +174,7 @@ function createGatewayCliStartupTrace() {
     async measure<T>(name: string, run: () => Awaitable<T>): Promise<T> {
       const before = performance.now();
       try {
-        return await withDiagnosticPhase(name, run);
+        return await run();
       } finally {
         const now = performance.now();
         emit(name, now - before, now - started);
@@ -873,3 +872,8 @@ export const __testing = {
   resolveGatewayLockErrorExitCode,
   runGatewayLoopWithSupervisedLockRecovery,
 };
+
+// Re-export for back-compat with importers that haven't been updated to the
+// new run-command.ts location (upstream 9bdc183b7d). Once those callers are
+// migrated this re-export can drop.
+export { addGatewayRunCommand } from "./run-command.js";

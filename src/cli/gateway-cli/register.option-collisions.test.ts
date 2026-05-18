@@ -55,7 +55,7 @@ vi.mock("./call.js", () => ({
     mocks.callGatewayCli(method, opts, params),
 }));
 
-vi.mock("./run-command.js", () => ({
+vi.mock("./run.js", () => ({
   addGatewayRunCommand: (cmd: Command) =>
     cmd
       .option("--token <token>", "Gateway token")
