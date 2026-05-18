@@ -8,8 +8,6 @@ import { defaultRuntime } from "../runtime.js";
 import { getTerminalTableWidth, renderTable } from "../terminal/table.js";
 import { theme } from "../terminal/theme.js";
 import { shortenHomeInString, shortenHomePath } from "../utils.js";
-import { formatCliCommand } from "./command-format.js";
-import { formatMissingPluginMessage } from "./error-format.js";
 import { quietPluginJsonLogger } from "./plugins-command-helpers.js";
 
 export type PluginInspectOptions = {
@@ -234,7 +232,7 @@ export async function runPluginsInspectCommand(
   );
   const targetPlugin = snapshotReport.plugins.find((entry) => entry.id === id || entry.name === id);
   if (!targetPlugin) {
-    defaultRuntime.error(formatMissingPluginMessage({ id, includeSearch: true }));
+    defaultRuntime.error(`Plugin not found: ${id}`);
     return defaultRuntime.exit(1);
   }
   const report = runtimeInspect
@@ -256,9 +254,7 @@ export async function runPluginsInspectCommand(
     report,
   });
   if (!inspect) {
-    defaultRuntime.error(
-      formatMissingPluginMessage({ id, listCommand: "openclaw plugins list --json" }),
-    );
+    defaultRuntime.error(`Plugin not found: ${id}`);
     return defaultRuntime.exit(1);
   }
   const install = installRecords[inspect.plugin.id];

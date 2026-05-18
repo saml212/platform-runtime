@@ -2,11 +2,6 @@ import { resolveChannelDefaultAccountId } from "../../channels/plugins/helpers.j
 import { getChannelPlugin, normalizeChannelId } from "../../channels/plugins/index.js";
 import { listReadOnlyChannelPluginsForConfig } from "../../channels/plugins/read-only.js";
 import type { ChannelPlugin } from "../../channels/plugins/types.plugin.js";
-import { formatCliCommand } from "../../cli/command-format.js";
-import {
-  formatUnknownChannelMessage,
-  formatUnsupportedChannelActionMessage,
-} from "../../cli/error-format.js";
 import { commitConfigWithPendingPluginInstalls } from "../../cli/plugins-install-record-commit.js";
 import { refreshPluginRegistryAfterConfigMutation } from "../../cli/plugins-registry-refresh.js";
 import { replaceConfigFile, type OpenClawConfig } from "../../config/config.js";
@@ -126,9 +121,7 @@ export async function channelsRemoveCommand(
     }
   } else {
     if (!rawChannel) {
-      runtime.error(
-        `Missing channel. Use ${formatCliCommand("openclaw channels remove --channel <name>")} or run ${formatCliCommand("openclaw channels status")} to inspect configured channels.`,
-      );
+      runtime.error("Channel is required. Use --channel <name>.");
       runtime.exit(1);
       return;
     }
@@ -163,7 +156,7 @@ export async function channelsRemoveCommand(
   }
   const resolvedChannel = resolvedPluginState?.channelId ?? channel;
   if (!resolvedChannel) {
-    runtime.error(formatUnknownChannelMessage({ channel: rawChannel }));
+    runtime.error(`Unknown channel: ${rawChannel}`);
     runtime.exit(1);
     return;
   }
@@ -172,12 +165,12 @@ export async function channelsRemoveCommand(
   if (!plugin) {
     if (resolvedPluginState?.catalogEntry) {
       runtime.error(
-        `Channel plugin "${resolvedPluginState.catalogEntry.id}" is not installed. Run ${formatCliCommand(`openclaw channels add --channel ${resolvedPluginState.catalogEntry.id}`)} first.`,
+        `Channel plugin "${resolvedPluginState.catalogEntry.id}" is not installed. Run "openclaw channels add --channel ${resolvedPluginState.catalogEntry.id}" first.`,
       );
       runtime.exit(1);
       return;
     }
-    runtime.error(formatUnknownChannelMessage({ channel: resolvedChannel }));
+    runtime.error(`Unknown channel: ${resolvedChannel}`);
     runtime.exit(1);
     return;
   }
@@ -198,9 +191,7 @@ export async function channelsRemoveCommand(
   const prevCfg = cfg;
   if (deleteConfig) {
     if (!plugin.config.deleteAccount) {
-      runtime.error(
-        `${formatUnsupportedChannelActionMessage({ channel, action: "delete" })} Use ${formatCliCommand("openclaw channels remove --channel " + channel)} to disable it without deleting config.`,
-      );
+      runtime.error(`Channel ${channel} does not support delete.`);
       runtime.exit(1);
       return;
     }
@@ -215,9 +206,7 @@ export async function channelsRemoveCommand(
     });
   } else {
     if (!plugin.config.setAccountEnabled) {
-      runtime.error(
-        `${formatUnsupportedChannelActionMessage({ channel, action: "disable" })} Use ${formatCliCommand("openclaw channels remove --channel " + channel + " --delete")} only if you want to remove config.`,
-      );
+      runtime.error(`Channel ${channel} does not support disable.`);
       runtime.exit(1);
       return;
     }

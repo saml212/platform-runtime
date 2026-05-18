@@ -618,7 +618,6 @@ public struct AgentParams: Codable, Sendable {
     public let bootstrapcontextmode: AnyCodable?
     public let bootstrapcontextrunkind: AnyCodable?
     public let acpturnsource: String?
-    public let internalruntimehandoffid: String?
     public let internalevents: [[String: AnyCodable]]?
     public let inputprovenance: [String: AnyCodable]?
     public let voicewaketrigger: String?
@@ -655,7 +654,6 @@ public struct AgentParams: Codable, Sendable {
         bootstrapcontextmode: AnyCodable?,
         bootstrapcontextrunkind: AnyCodable?,
         acpturnsource: String?,
-        internalruntimehandoffid: String?,
         internalevents: [[String: AnyCodable]]?,
         inputprovenance: [String: AnyCodable]?,
         voicewaketrigger: String?,
@@ -691,7 +689,6 @@ public struct AgentParams: Codable, Sendable {
         self.bootstrapcontextmode = bootstrapcontextmode
         self.bootstrapcontextrunkind = bootstrapcontextrunkind
         self.acpturnsource = acpturnsource
-        self.internalruntimehandoffid = internalruntimehandoffid
         self.internalevents = internalevents
         self.inputprovenance = inputprovenance
         self.voicewaketrigger = voicewaketrigger
@@ -729,7 +726,6 @@ public struct AgentParams: Codable, Sendable {
         case bootstrapcontextmode = "bootstrapContextMode"
         case bootstrapcontextrunkind = "bootstrapContextRunKind"
         case acpturnsource = "acpTurnSource"
-        case internalruntimehandoffid = "internalRuntimeHandoffId"
         case internalevents = "internalEvents"
         case inputprovenance = "inputProvenance"
         case voicewaketrigger = "voiceWakeTrigger"

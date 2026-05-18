@@ -27,17 +27,13 @@ import { formatCliCommand } from "./command-format.js";
 function parseChannel(raw: unknown, channels: PairingChannel[]): PairingChannel {
   const value = normalizeLowercaseStringOrEmpty(normalizeStringifiedOptionalString(raw) ?? "");
   if (!value) {
-    throw new Error(
-      `Missing channel. Use ${formatCliCommand("openclaw pairing list --channel <channel>")}.`,
-    );
+    throw new Error("Channel required");
   }
 
   const normalized = normalizeChannelId(value);
   if (normalized) {
     if (!channels.includes(normalized)) {
-      throw new Error(
-        `Channel "${normalized}" does not support pairing. Supported pairing channels: ${channels.join(", ") || "none"}.`,
-      );
+      throw new Error(`Channel ${normalized} does not support pairing`);
     }
     return normalized;
   }
@@ -46,9 +42,7 @@ function parseChannel(raw: unknown, channels: PairingChannel[]): PairingChannel 
   if (/^[a-z][a-z0-9_-]{0,63}$/.test(value)) {
     return value as PairingChannel;
   }
-  throw new Error(
-    `Invalid channel "${value}". Use lowercase letters, numbers, "_" or "-", for example "telegram".`,
-  );
+  throw new Error(`Invalid channel: ${value}`);
 }
 
 async function notifyApproved(channel: PairingChannel, id: string) {
@@ -191,9 +185,7 @@ export function registerPairingCli(program: Command) {
             code: String(resolvedCode),
           });
       if (!approved) {
-        throw new Error(
-          `No pending pairing request found for code "${String(resolvedCode)}". Run ${formatCliCommand(`openclaw pairing list --channel ${channel}`)} to list pending requests.`,
-        );
+        throw new Error(`No pending pairing request found for code: ${String(resolvedCode)}`);
       }
 
       defaultRuntime.log(

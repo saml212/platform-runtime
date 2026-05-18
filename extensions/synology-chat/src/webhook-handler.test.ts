@@ -160,10 +160,9 @@ describe("createWebhookHandler", () => {
   }
 
   async function runValidReply(params: { accountIdSuffix: string; reply?: string }) {
-    const deliver = vi.fn().mockResolvedValue(params.reply ?? "Bot reply");
-    const { handler } = makeTestHandler({
+    const { deliver, handler } = makeTestHandler({
       accountIdSuffix: params.accountIdSuffix,
-      deliver,
+      deliver: vi.fn().mockResolvedValue(params.reply ?? "Bot reply"),
     });
     const res = await postToWebhook(handler);
     expect(res._status).toBe(204);

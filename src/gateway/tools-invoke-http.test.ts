@@ -397,7 +397,7 @@ const invokeToolsRpc = async (params: Record<string, unknown>, scopes = ["operat
   const respond = vi.fn();
   await toolsInvokeHandlers["tools.invoke"]({
     params,
-    respond,
+    respond: respond as never,
     context: { getRuntimeConfig: () => cfg } as never,
     client: { connect: { role: "operator", scopes } } as never,
     req: { type: "req", id: "req-rpc-1", method: "tools.invoke" },

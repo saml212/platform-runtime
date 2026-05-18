@@ -153,7 +153,7 @@ async function tryRunGatewayRunFastPath(
   ] = await startupTrace.measure("gateway-run-imports", () =>
     Promise.all([
       import("commander"),
-      import("./gateway-cli/run-command.js"),
+      import("./gateway-cli/run.js"),
       import("../version.js"),
       import("./banner.js"),
       import("./command-startup-policy.js"),

@@ -5,15 +5,9 @@ import {
   areDiagnosticsEnabledForProcess,
   emitDiagnosticEvent,
   isDiagnosticsEnabled,
-  type DiagnosticPhaseSnapshot,
   type DiagnosticLivenessWarningReason,
 } from "../infra/diagnostic-events.js";
 import { emitDiagnosticMemorySample, resetDiagnosticMemoryForTest } from "./diagnostic-memory.js";
-import {
-  getCurrentDiagnosticPhase,
-  getRecentDiagnosticPhases,
-  resetDiagnosticPhasesForTest,
-} from "./diagnostic-phase.js";
 import {
   getDiagnosticSessionActivitySnapshot,
   resetDiagnosticRunActivityForTest,
@@ -87,9 +81,6 @@ type DiagnosticWorkSnapshot = {
   activeCount: number;
   waitingCount: number;
   queuedCount: number;
-  activeLabels: string[];
-  waitingLabels: string[];
-  queuedLabels: string[];
 };
 
 type RecoverStuckSession = (params: {
@@ -151,56 +142,21 @@ function recoverStuckSession(params: {
     });
 }
 
-function formatDiagnosticWorkLabel(
-  state: {
-    sessionId?: string;
-    sessionKey?: string;
-    state: SessionStateValue;
-    queueDepth: number;
-    lastActivity: number;
-  },
-  now: number,
-): string {
-  const label = state.sessionKey ?? state.sessionId ?? "unknown";
-  const ageSeconds = Math.round(Math.max(0, now - state.lastActivity) / 1000);
-  const activity = getDiagnosticSessionActivitySnapshot(
-    { sessionId: state.sessionId, sessionKey: state.sessionKey },
-    now,
-  );
-  const workKind = activity.activeWorkKind ? `/${activity.activeWorkKind}` : "";
-  const lastProgress = activity.lastProgressReason ? ` last=${activity.lastProgressReason}` : "";
-  return `${label}(${state.state}${workKind},q=${state.queueDepth},age=${ageSeconds}s${lastProgress})`;
-}
-
-function pushLimitedDiagnosticLabel(labels: string[], label: string, limit = 5): void {
-  if (labels.length < limit) {
-    labels.push(label);
-  }
-}
-
-function getDiagnosticWorkSnapshot(now = Date.now()): DiagnosticWorkSnapshot {
+function getDiagnosticWorkSnapshot(): DiagnosticWorkSnapshot {
   let activeCount = 0;
   let waitingCount = 0;
   let queuedCount = 0;
-  const activeLabels: string[] = [];
-  const waitingLabels: string[] = [];
-  const queuedLabels: string[] = [];
 
   for (const state of diagnosticSessionStates.values()) {
     if (state.state === "processing") {
       activeCount += 1;
-      pushLimitedDiagnosticLabel(activeLabels, formatDiagnosticWorkLabel(state, now));
     } else if (state.state === "waiting") {
       waitingCount += 1;
-      pushLimitedDiagnosticLabel(waitingLabels, formatDiagnosticWorkLabel(state, now));
-    }
-    if (state.queueDepth > 0) {
-      pushLimitedDiagnosticLabel(queuedLabels, formatDiagnosticWorkLabel(state, now));
     }
     queuedCount += state.queueDepth;
   }
 
-  return { activeCount, waitingCount, queuedCount, activeLabels, waitingLabels, queuedLabels };
+  return { activeCount, waitingCount, queuedCount };
 }
 
 function hasOpenDiagnosticWork(snapshot: DiagnosticWorkSnapshot): boolean {
@@ -350,10 +306,6 @@ function emitDiagnosticLivenessWarning(
   sample: DiagnosticLivenessSample,
   work: DiagnosticWorkSnapshot,
 ): void {
-  const phase = getCurrentDiagnosticPhase();
-  const recentPhases = getRecentDiagnosticPhases(6);
-  const recentPhaseSummary = formatRecentDiagnosticPhases(recentPhases);
-  const workLabelSummary = formatDiagnosticWorkLabels(work);
   const message = `liveness warning: reasons=${sample.reasons.join(",")} interval=${Math.round(
     sample.intervalMs / 1000,
   )}s eventLoopDelayP99Ms=${formatOptionalDiagnosticMetric(
@@ -364,11 +316,7 @@ function emitDiagnosticLivenessWarning(
     sample.eventLoopUtilization,
   )} cpuCoreRatio=${formatOptionalDiagnosticMetric(sample.cpuCoreRatio)} active=${
     work.activeCount
-  } waiting=${work.waitingCount} queued=${work.queuedCount}${
-    phase ? ` phase=${phase}` : ""
-  }${recentPhaseSummary ? ` recentPhases=${recentPhaseSummary}` : ""}${
-    workLabelSummary ? ` work=[${workLabelSummary}]` : ""
-  }`;
+  } waiting=${work.waitingCount} queued=${work.queuedCount}`;
   const hasBlockingWork = work.waitingCount > 0 || work.queuedCount > 0;
   const hasSustainedEventLoopDelay =
     (sample.eventLoopDelayP99Ms ?? 0) >= DEFAULT_LIVENESS_EVENT_LOOP_DELAY_WARN_MS;
@@ -391,26 +339,8 @@ function emitDiagnosticLivenessWarning(
     active: work.activeCount,
     waiting: work.waitingCount,
     queued: work.queuedCount,
-    phase,
-    recentPhases,
-    activeWorkLabels: work.activeLabels,
-    waitingWorkLabels: work.waitingLabels,
-    queuedWorkLabels: work.queuedLabels,
   });
   markActivity();
-}
-
-function formatRecentDiagnosticPhases(phases: DiagnosticPhaseSnapshot[]): string {
-  return phases.map((phase) => `${phase.name}:${Math.round(phase.durationMs ?? 0)}ms`).join(",");
-}
-
-function formatDiagnosticWorkLabels(work: DiagnosticWorkSnapshot): string {
-  const parts = [
-    work.activeLabels.length > 0 ? `active=${work.activeLabels.join("|")}` : "",
-    work.waitingLabels.length > 0 ? `waiting=${work.waitingLabels.join("|")}` : "",
-    work.queuedLabels.length > 0 ? `queued=${work.queuedLabels.join("|")}` : "",
-  ].filter(Boolean);
-  return parts.join(" ");
 }
 
 export function resolveStuckSessionWarnMs(config?: OpenClawConfig): number {
@@ -658,9 +588,6 @@ function sessionAttentionFields(params: {
   classification: SessionAttentionClassification;
   activity: DiagnosticSessionActivitySnapshot;
 }) {
-  const terminalProgressStale = isTerminalDiagnosticProgressReason(
-    params.activity.lastProgressReason,
-  );
   return {
     ...(params.classification.activeWorkKind
       ? { activeWorkKind: params.classification.activeWorkKind }
@@ -678,22 +605,7 @@ function sessionAttentionFields(params: {
     ...(params.activity.activeToolAgeMs !== undefined
       ? { activeToolAgeMs: params.activity.activeToolAgeMs }
       : {}),
-    ...(terminalProgressStale ? { terminalProgressStale: true } : {}),
   };
-}
-
-function isTerminalDiagnosticProgressReason(reason: string | undefined): boolean {
-  if (!reason) {
-    return false;
-  }
-  return (
-    reason === "run:completed" ||
-    reason === "embedded_run:ended" ||
-    reason.includes("response.completed") ||
-    reason.includes("rawResponseItem/completed") ||
-    reason.includes("raw_response_item.completed") ||
-    reason.includes("output_item.done")
-  );
 }
 
 function formatSessionActivityLogFields(activity: DiagnosticSessionActivitySnapshot): string {
@@ -712,9 +624,6 @@ function formatSessionActivityLogFields(activity: DiagnosticSessionActivitySnaps
   }
   if (activity.activeToolAgeMs !== undefined) {
     fields.push(`activeToolAge=${Math.round(activity.activeToolAgeMs / 1000)}s`);
-  }
-  if (isTerminalDiagnosticProgressReason(activity.lastProgressReason)) {
-    fields.push("terminalProgressStale=true");
   }
   return fields.join(" ");
 }
@@ -926,7 +835,7 @@ export function startDiagnosticHeartbeat(
     const stuckSessionWarnMs = resolveStuckSessionWarnMs(heartbeatConfig);
     const now = Date.now();
     pruneDiagnosticSessionStates(now, true);
-    const work = getDiagnosticWorkSnapshot(now);
+    const work = getDiagnosticWorkSnapshot();
     const livenessSample = (opts?.sampleLiveness ?? sampleDiagnosticLiveness)(now, work);
     const shouldEmitLivenessEvent =
       livenessSample !== null && shouldEmitDiagnosticLivenessEvent(now);
@@ -1034,7 +943,6 @@ export function resetDiagnosticStateForTest(): void {
   webhookStats.lastReceived = 0;
   stopDiagnosticHeartbeat();
   resetDiagnosticMemoryForTest();
-  resetDiagnosticPhasesForTest();
   resetDiagnosticStabilityRecorderForTest();
   resetDiagnosticStabilityBundleForTest();
 }

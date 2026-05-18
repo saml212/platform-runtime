@@ -21,7 +21,6 @@ const TMUX_CHILD_ENV_KEYS = [
   RUN_NODE_CPU_PROF_DIR_ENV,
   "OPENCLAW_SKIP_CHANNELS",
   "OPENCLAW_STATE_DIR",
-  "OPENCLAW_TRACE_SYNC_IO",
 ];
 
 const sanitizeSessionPart = (value) => {

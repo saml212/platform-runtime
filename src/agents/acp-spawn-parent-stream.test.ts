@@ -51,9 +51,7 @@ let resolveAcpSpawnStreamLogPath: typeof import("./acp-spawn-parent-stream.js").
 let startAcpSpawnParentStreamRelay: typeof import("./acp-spawn-parent-stream.js").startAcpSpawnParentStreamRelay;
 
 function collectedTexts() {
-  return enqueueSystemEventMock.mock.calls.map((call) =>
-    typeof call[0] === "string" ? call[0] : (JSON.stringify(call[0]) ?? ""),
-  );
+  return enqueueSystemEventMock.mock.calls.map((call) => String(call[0] ?? ""));
 }
 
 describe("startAcpSpawnParentStreamRelay", () => {

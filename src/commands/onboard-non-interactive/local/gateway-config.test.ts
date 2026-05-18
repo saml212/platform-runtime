@@ -204,7 +204,7 @@ describe("applyNonInteractiveGatewayConfig token resolution chain", () => {
 
     expect(result).toBeNull();
     expect(runtime.error).toHaveBeenCalledWith(
-      'Environment variable "MISSING_GATEWAY_TOKEN_ENV" is missing or empty. Export it first, then rerun openclaw onboard --non-interactive.',
+      'Environment variable "MISSING_GATEWAY_TOKEN_ENV" is missing or empty.',
     );
     expect(runtime.exit).toHaveBeenCalledWith(1);
     expect(randomToken).not.toHaveBeenCalled();
